@@ -1,288 +1,41 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PCJWL Tournament Manager</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, deleteDoc, doc, updateDoc, getDocs, setDoc, writeBatch } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+<script type="module">
+    // ... [Previous initialization code remains the same] ...
 
-        const firebaseConfig = {
-            apiKey: "AIzaSyBVZBDErgAnh1Eq73rQ10UNqcUNk2FMn0",
-            authDomain: "pcjwl-bd3df.firebaseapp.com",
-            projectId: "pcjwl-bd3df",
-            storageBucket: "pcjwl-bd3df.firebasestorage.app",
-            messagingSenderId: "647936171921",
-            appId: "1:647936171921:web:6158bd4bad5c25973c0430"
-        };
-
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
-
-        const TEAMS = ["Franklin Pierce", "Mad Dogs", "Enumclaw", "Hoquiam", "Cruisers WC", "Auburn", "Olympia", "Tumwater", "Kent", "Rainier", "Orting", "Tahoma", "Sumner", "Gig Harbor", "University Place", "White River", "Puyallup", "Bethel", "JBLM", "Fife"];
-        
-        let currentUserRole = null; // 'admin', 'public', or 'Team Name'
-        let wrestlers = [];
-        let teamData = {};
-
-        // INITIALIZE TEAM PINS IF THEY DON'T EXIST
-        async function initTeamPins() {
-            const snap = await getDocs(collection(db, "teams"));
-            if (snap.empty) {
-                const batch = writeBatch(db);
-                TEAMS.forEach(t => {
-                    const pin = Math.floor(1000 + Math.random() * 9000);
-                    batch.set(doc(db, "teams", t), { name: t, pin: pin.toString() });
-                });
-                await batch.commit();
-            }
-        }
-        initTeamPins();
-
-        onSnapshot(collection(db, "teams"), (snap) => {
-            snap.forEach(d => teamData[d.data().pin] = d.id);
-            if (currentUserRole === 'admin') renderAdminTeamList();
+    function renderRoster() {
+        const list = document.getElementById('roster-list');
+        const search = document.getElementById('roster-search').value.toLowerCase();
+        const filtered = wrestlers.filter(w => {
+            const matchName = `${w.firstName} ${w.lastName}`.toLowerCase().includes(search);
+            const matchTeam = currentUserRole === 'admin' || currentUserRole === 'public' || w.team === currentUserRole;
+            return matchName && matchTeam;
         });
 
-        window.login = async (pin) => {
-            const p = pin.trim();
-            if (p === '1234') { 
-                currentUserRole = 'admin'; 
-                showApp(); 
-            } else if (p === 'GUEST') { 
-                currentUserRole = 'public'; 
-                showApp(); 
-            } else if (teamData[p]) {
-                currentUserRole = teamData[p];
-                showApp();
-            } else { 
-                alert("Invalid PIN."); 
-            }
-        };
-
-        function showApp() {
-            document.getElementById('login-screen').classList.add('hidden');
-            document.getElementById('app-content').classList.remove('hidden');
-            
-            if (currentUserRole === 'admin') {
-                document.querySelectorAll('.admin-only').forEach(e => e.classList.remove('hidden'));
-                document.querySelectorAll('.coach-only').forEach(e => e.classList.remove('hidden'));
-            } else if (currentUserRole !== 'public') {
-                document.querySelectorAll('.coach-only').forEach(e => e.classList.remove('hidden'));
-                document.getElementById('current-team-display').innerText = `Team: ${currentUserRole}`;
-            } else {
-                document.getElementById('input-section').classList.add('hidden');
-            }
-            setupTeamDropdown();
-        }
-
-        function setupTeamDropdown() {
-            const select = document.getElementById('team-select');
-            select.innerHTML = '';
-            const list = currentUserRole === 'admin' || currentUserRole === 'public' ? TEAMS : [currentUserRole];
-            list.sort().forEach(t => { 
-                const o = document.createElement('option'); 
-                o.value = t; o.textContent = t; 
-                select.appendChild(o); 
-            });
-        }
-
-        onSnapshot(collection(db, "wrestlers"), (snap) => {
-            wrestlers = [];
-            snap.forEach(d => wrestlers.push({ id: d.id, ...d.data() }));
-            renderRoster();
-            updateProgressBar();
-        });
-
-        window.changePin = async () => {
-            const newPin = prompt("Enter your new 4-digit PIN:");
-            if (newPin && newPin.length >= 4) {
-                await updateDoc(doc(db, "teams", currentUserRole), { pin: newPin });
-                alert("PIN Updated! Please use this new PIN for next login.");
-            }
-        };
-
-        window.importCSV = async () => {
-            const input = document.getElementById('csv-input').value;
-            const rows = input.split('\n');
-            const batch = writeBatch(db);
-            rows.forEach(row => {
-                const cols = row.split(',');
-                if(cols.length >= 2) {
-                    const ref = doc(collection(db, "wrestlers"));
-                    batch.set(ref, {
-                        firstName: cols[0].trim(),
-                        lastName: cols[1].trim(),
-                        team: currentUserRole,
-                        ageGroup: cols[2]?.trim() || "8 & Under Open",
-                        skill: cols[3]?.trim() || "Beginner",
-                        estWeight: parseFloat(cols[4]) || 0,
-                        weight: 0, weighedIn: false
-                    });
-                }
-            });
-            await batch.commit();
-            document.getElementById('csv-modal').classList.add('hidden');
-        };
-
-        // Standard functions (Add, Weigh, Move, Progress) remain same as previous version...
-        window.addWrestler = async (e) => {
-            e.preventDefault();
-            const data = {
-                firstName: document.getElementById('fname').value,
-                lastName: document.getElementById('lname').value,
-                team: document.getElementById('team-select').value,
-                ageGroup: document.getElementById('age-group').value,
-                skill: document.getElementById('skill').value,
-                estWeight: parseFloat(document.getElementById('est-weight').value) || 0,
-                weight: 0, weighedIn: false
-            };
-            await addDoc(collection(db, "wrestlers"), data);
-            e.target.reset();
-        };
-
-        window.markWeighedIn = async (id) => {
-            if(currentUserRole === 'public') return;
-            const w = prompt("Enter Official Scale Weight:");
-            if (w) await updateDoc(doc(db, "wrestlers", id), { weight: parseFloat(w), weighedIn: true });
-        };
-
-        function renderRoster() {
-            const list = document.getElementById('roster-list');
-            const search = document.getElementById('roster-search').value.toLowerCase();
-            const filtered = wrestlers.filter(w => {
-                const matchName = `${w.firstName} ${w.lastName}`.toLowerCase().includes(search);
-                const matchTeam = currentUserRole === 'admin' || currentUserRole === 'public' || w.team === currentUserRole;
-                return matchName && matchTeam;
-            });
-            list.innerHTML = filtered.map(w => `
-                <div class="flex justify-between items-center p-2 border-b ${w.weighedIn ? 'bg-green-50' : 'bg-white'} rounded-lg mb-1">
-                    <div>
-                        <span class="font-bold text-sm">${w.firstName} ${w.lastName}</span>
-                        <div class="text-[9px] text-gray-500 uppercase font-bold">${w.team}</div>
+        list.innerHTML = filtered.map(w => `
+            <div class="flex justify-between items-center p-3 border-b ${w.weighedIn ? 'bg-green-50' : 'bg-white'} rounded-lg mb-1 shadow-sm">
+                <div class="flex-1">
+                    <div class="flex items-center gap-2">
+                        <span class="font-bold text-sm text-slate-800">${w.firstName} ${w.lastName}</span>
+                        <span class="text-[8px] bg-slate-100 px-1 rounded font-black text-slate-500 uppercase">${w.skill}</span>
                     </div>
-                    <button onclick="markWeighedIn('${w.id}')" class="px-3 py-1 rounded text-[10px] font-bold text-white ${w.weighedIn ? 'bg-green-600' : 'bg-red-500'}">
-                        ${w.weighedIn ? w.weight + ' lbs' : 'WEIGH'}
+                    <div class="text-[9px] text-blue-900 font-bold uppercase mt-0.5">
+                        ${w.team} <span class="text-gray-400 mx-1">|</span> ${w.ageGroup}
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button onclick="markWeighedIn('${w.id}')" class="px-4 py-2 rounded text-[10px] font-black text-white shadow-sm transition-all ${w.weighedIn ? 'bg-green-600' : 'bg-red-500 hover:bg-red-600'}">
+                        ${w.weighedIn ? w.weight + ' LBS' : 'WEIGH'}
                     </button>
-                </div>`).join('');
+                    ${currentUserRole === 'admin' ? `<button onclick="deleteWrestler('${w.id}')" class="text-gray-300 hover:text-red-500 text-xs px-1">✕</button>` : ''}
+                </div>
+            </div>`).join('');
+    }
+
+    // Add this helper for Admin cleanup
+    window.deleteWrestler = async (id) => {
+        if(confirm("Delete this wrestler?")) {
+            await deleteDoc(doc(db, "wrestlers", id));
         }
+    };
 
-        function updateProgressBar() {
-            const total = wrestlers.length;
-            const weighed = wrestlers.filter(w => w.weighedIn).length;
-            const pct = total === 0 ? 0 : Math.round((weighed / total) * 100);
-            document.getElementById('progress-bar').style.width = pct + '%';
-            document.getElementById('progress-text').innerText = `${weighed} / ${total} Athletes Weighed In`;
-        }
-
-        window.generateBrackets = () => {
-            const ready = wrestlers.filter(w => w.weighedIn);
-            const size = parseInt(document.getElementById('bracket-size').value);
-            const diff = parseFloat(document.getElementById('max-diff').value);
-            const out = document.getElementById('bracket-output');
-            out.innerHTML = '';
-            let boutCounter = 100;
-            const groups = {};
-            ready.forEach(w => {
-                const key = `${w.ageGroup} - ${w.skill}`;
-                if (!groups[key]) groups[key] = [];
-                groups[key].push(w);
-            });
-            for (let key in groups) {
-                const sorted = groups[key].sort((a,b) => a.weight - b.weight);
-                let current = [];
-                sorted.forEach(w => {
-                    if (current.length === 0 || (w.weight - current[0].weight <= diff && current.length < size)) {
-                        current.push(w);
-                    } else {
-                        renderCard(current, key, boutCounter++);
-                        current = [w];
-                    }
-                });
-                if (current.length) renderCard(current, key, boutCounter++);
-            }
-        };
-
-        function renderCard(kids, group, boutNum) {
-            const div = document.createElement('div');
-            div.className = "p-4 border-2 border-black bg-white mb-4 shadow-md break-inside-avoid";
-            div.innerHTML = `<div class="flex justify-between items-center border-b-2 border-black pb-1 mb-2"><h3 class="font-black italic text-blue-900">${group}</h3><span class="bg-black text-white px-2 py-0.5 text-xs font-bold">#${boutNum}</span></div>` +
-                kids.map((k, i) => `<div class="flex justify-between border-b border-gray-100 py-1 text-xs"><span>${k.firstName} ${k.lastName} (${k.team})</span><span class="font-bold">${k.weight}</span></div>`).join('') +
-                `<div class="mt-4 grid grid-cols-4 gap-1 text-[8px] font-bold text-center"><div class="border">RD 1</div><div class="border">RD 2</div><div class="border">RD 3</div><div class="border bg-gray-100">PLACE</div></div>`;
-            document.getElementById('bracket-output').appendChild(div);
-        }
-    </script>
-</head>
-<body class="bg-slate-50 min-h-screen">
-    <div id="login-screen" class="flex flex-col items-center pt-32 no-print">
-        <div class="bg-white p-8 rounded-2xl shadow-xl w-80 text-center border-t-4 border-blue-900">
-            <h1 class="text-3xl font-black italic text-blue-900 mb-6 uppercase">PCJWL</h1>
-            <input type="password" id="pin" class="border p-3 w-full mb-4 rounded-lg text-center" placeholder="Enter Team or Admin PIN">
-            <button onclick="login(document.getElementById('pin').value)" class="bg-blue-900 text-white w-full py-3 rounded-xl font-bold uppercase italic">Enter Dashboard</button>
-            <p class="text-[9px] mt-4 text-gray-400">Public View: Use 'GUEST'</p>
-        </div>
-    </div>
-
-    <div id="app-content" class="hidden max-w-6xl mx-auto p-4 md:p-8">
-        <div class="flex justify-between items-center mb-6 no-print">
-            <div>
-                <h1 class="text-2xl font-black italic text-blue-900">PCJWL TOURNAMENT</h1>
-                <p id="current-team-display" class="text-xs font-bold text-gray-500 uppercase"></p>
-            </div>
-            <div class="flex gap-2">
-                <button onclick="document.getElementById('csv-modal').classList.remove('hidden')" class="coach-only hidden bg-white border px-3 py-1 rounded text-xs font-bold shadow-sm">IMPORT ROSTER</button>
-                <button onclick="changePin()" class="coach-only hidden bg-gray-100 px-3 py-1 rounded text-xs font-bold">CHANGE PIN</button>
-                <button onclick="location.reload()" class="bg-red-50 text-red-600 px-3 py-1 rounded text-xs font-bold">LOGOUT</button>
-            </div>
-        </div>
-
-        <div class="mb-8 no-print">
-            <div class="flex justify-between items-end mb-1">
-                <p id="progress-text" class="text-[10px] font-bold text-gray-400 uppercase">0 / 0 Weighed In</p>
-            </div>
-            <div class="w-full h-2 bg-gray-200 rounded-full overflow-hidden"><div id="progress-bar" class="h-full bg-green-500 transition-all" style="width: 0%"></div></div>
-        </div>
-
-        <div id="input-section" class="grid grid-cols-1 lg:grid-cols-3 gap-6 no-print">
-            <div class="bg-white p-5 rounded-xl shadow-sm border">
-                <h2 class="font-bold text-xs uppercase text-gray-400 mb-4">Registration</h2>
-                <form onsubmit="addWrestler(event)" class="space-y-3">
-                    <input type="text" id="fname" placeholder="First Name" class="border p-2 w-full rounded text-sm" required>
-                    <input type="text" id="lname" placeholder="Last Name" class="border p-2 w-full rounded text-sm" required>
-                    <select id="team-select" class="border p-2 w-full rounded text-sm font-bold"></select>
-                    <div class="grid grid-cols-2 gap-2">
-                        <select id="age-group" class="border p-2 rounded text-xs"><option>8 & Under Open</option><option>9 & Over Open</option><option>Female</option></select>
-                        <select id="skill" class="border p-2 rounded text-xs"><option>Beginner</option><option>Intermediate</option><option>Advanced</option></select>
-                    </div>
-                    <input type="number" id="est-weight" placeholder="Coach Weight" class="border p-2 w-full rounded text-sm">
-                    <button type="submit" class="bg-blue-800 text-white w-full py-3 rounded-lg font-bold italic uppercase">Register Athlete</button>
-                </form>
-            </div>
-            <div class="lg:col-span-2 bg-white p-5 rounded-xl shadow-sm border">
-                <div class="flex justify-between items-center mb-4 border-b pb-2"><h2 class="font-bold text-xs uppercase text-gray-400">Scale Check-in</h2><input type="text" id="roster-search" onkeyup="renderRoster()" placeholder="Search Name..." class="border p-1 text-xs rounded w-1/3"></div>
-                <div id="roster-list" class="grid grid-cols-1 md:grid-cols-2 gap-2 h-64 overflow-y-auto pr-2"></div>
-            </div>
-        </div>
-
-        <div class="admin-only hidden mt-8 bg-blue-900 p-6 rounded-2xl no-print text-white shadow-xl flex flex-wrap gap-6 items-end">
-            <div><label class="text-[10px] uppercase font-bold opacity-60">Bracket Limit</label><select id="bracket-size" class="text-black p-2 rounded w-full"><option value="4">4 Kids</option><option value="5">5 Kids</option><option value="6">6 Kids</option></select></div>
-            <div><label class="text-[10px] uppercase font-bold opacity-60">Max Diff (lbs)</label><input type="number" id="max-diff" value="5" class="text-black p-2 rounded w-16"></div>
-            <button onclick="generateBrackets()" class="bg-yellow-400 text-blue-900 px-6 py-2 rounded-lg font-black uppercase italic shadow-md">Build Brackets</button>
-            <button onclick="window.print()" class="bg-white/20 px-6 py-2 rounded-lg font-bold hover:bg-white/30 transition-all">Print Sheets</button>
-        </div>
-
-        <div id="bracket-output" class="mt-10 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
-    </div>
-
-    <div id="csv-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center p-4 no-print">
-        <div class="bg-white p-6 rounded-lg w-full max-w-lg">
-            <h2 class="font-bold mb-2 uppercase text-sm">Bulk Upload for Your Team</h2>
-            <p class="text-[10px] text-gray-500 mb-4">Paste from Excel: First, Last, Age, Skill, Est Weight</p>
-            <textarea id="csv-input" class="w-full h-48 border p-2 text-xs font-mono" placeholder="John,Smith,8 & Under Open,Beginner,65"></textarea>
-            <div class="flex justify-end gap-2 mt-4"><button onclick="document.getElementById('csv-modal').classList.add('hidden')" class="bg-gray-200 px-4 py-2 rounded text-xs font-bold">CANCEL</button><button onclick="importCSV()" class="bg-blue-800 text-white px-4 py-2 rounded text-xs font-bold uppercase">Process Roster</button></div>
-        </div>
-    </div>
-</body>
-</html>
+    // ... [Rest of the helper functions remain the same] ...
+</script>
