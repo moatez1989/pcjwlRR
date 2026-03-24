@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PCJWL Tournament Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, deleteDoc, doc, updateDoc, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyBVZBDErgAnh1Eq73rQ10UNqcUNk2FMn0",
+            authDomain: "pcjwl-bd3df.firebaseapp.com",
+            projectId: "pcjwl-bd3df",
+            storageBucket: "pcjwl-bd3df.firebasestorage.app",
+            messagingSenderId: "647936171921",
+            appId: "1:647936171921:web:6158bd4bad5c25973c0430"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const DIVISIONS = { "1A": ["Franklin Pierce", "Mad Dogs", "Enumclaw", "Hoquiam", "Cruisers WC"], "1B": ["Auburn", "Olympia", "Tumwater", "Kent", "Rainier"], "2A": ["Orting", "Tahoma", "Sumner", "Gig Harbor", "University Place"], "2B": ["White River", "Puyallup", "Bethel", "JBLM", "Fife"] };
+        let currentUserRole = null; // 'admin', '1A/1B/2A/2B', or 'public'
+        let wrestlers = [];
+
+        window.login = (pin) => {
+            const p = pin.trim().toUpperCase();
+            if (p === '1234') { currentUserRole = 'admin'; showApp(); }
+            else if (DIVISIONS[p]) { currentUserRole = p; showApp(); }
+            else if (p === 'GUEST') { currentUserRole = 'public'; showApp(); }
+            else { alert("Invalid PIN. Use 'GUEST' for public view."); }
+        };
+
+        function showApp() {
+            document.getElementById('login-screen').classList.add('hidden');
+            document.getElementById('app-content').classList.remove('hidden');
+            if(currentUserRole === 'admin') document.querySelectorAll('.admin-only').forEach(e => e.classList.remove('hidden'));
+            if(currentUserRole === 'public') document.getElementById('input-section').classList.add('hidden');
+            setupTeamDropdown(currentUserRole === 'admin' || currentUserRole === 'public' ? "ALL" : currentUserRole);
+        }
+
+        function setupTeamDropdown(div) {
+            const select = document.getElementById('team-select');
+            select.innerHTML = '';
+            const teams = div === "ALL" ? Object.values(DIVISIONS).flat().sort() : DIVISIONS[div];
+            teams.forEach(t => { const o = document.createElement('option'); o.value = t; o.textContent = t; select.appendChild(o); });
+        }
+
+        onSnapshot(collection(db, "wrestlers"), (snap) => {
+            wrestlers = [];
+            snap.forEach(d => wrestlers.push({ id: d.id, ...d.data() }));
+            renderRoster();
+            updateProgressBar();
+        });
+
+        function updateProgressBar() {
+            const total = wrestlers.length;
+            const weighed = wrestlers.filter(w => w.weighedIn).length;
+            const pct = total === 0 ? 0 : Math.round((weighed / total) * 100);
+            document.getElementById('progress-bar').style.width = pct + '%';
+            document.getElementById('progress-text').innerText = `${weighed} / ${total} Athletes Weighed In (${pct}%)`;
+        }
+
+        window.addWrestler = async (e) => {
+            e.preventDefault();
+            const data = {
+                firstName: document.getElementById('fname').value,
+                lastName: document.getElementById('lname').value,
+                team: document.getElementById('team-select').value,
+                ageGroup: document.getElementById('age-group').value,
+                skill: document.getElementById('skill').value,
+                estWeight: parseFloat(document.getElementById('est-weight').value) || 0,
+                weight: 0, weighedIn: false
+            };
+            await addDoc(collection(db, "wrestlers"), data);
+            e.target.reset();
+        };
+
+        window.markWeighedIn = async (id) => {
+            if(currentUserRole === 'public') return;
+            const w = prompt("Enter Official Scale Weight:");
+            if (w) await updateDoc(doc(db, "wrestlers", id), { weight: parseFloat(w), weighedIn: true });
+        };
+
+        window.generateBrackets = () => {
+            const ready = wrestlers.filter(w => w.weighedIn);
+            const size = parseInt(document.getElementById('bracket-size').value);
+            const diff = parseFloat(document.getElementById('max-diff').value);
+            const out = document.getElementById('bracket-output');
+            out.innerHTML = '';
+            let boutCounter = 100;
+
+            const groups = {};
+            ready.forEach(w => {
+                const key = `${w.ageGroup} - ${w.skill}`;
+                if (!groups[key]) groups[key] = [];
+                groups[key].push(w);
+            });
+
+            for (let key in groups) {
+                const sorted = groups[key].sort((a,b) => a.weight - b.weight);
+                let current = [];
+                sorted.forEach(w => {
+                    if (current.length === 0 || (w.weight - current[0].weight <= diff && current.length < size)) {
+                        current.push(w);
+                    } else {
+                        renderCard(current, key, boutCounter++);
+                        current = [w];
+                    }
+                });
+                if (current.length) renderCard(current, key, boutCounter++);
+            }
+        };
+
+        function renderCard(kids, group, boutNum) {
+            const div = document.createElement('div');
+            div.className = "p-4 border-2 border-black bg-white mb-4 shadow-md break-inside-avoid";
+            div.innerHTML = `
+                <div class="flex justify-between items-center border-b-2 border-black pb-1 mb-2">
+                    <h3 class="font-black italic text-blue-900">${group}</h3>
+                    <span class="bg-black text-white px-2 py-0.5 text-xs font-bold">BOUT #${boutNum}</span>
+                </div>` +
+                kids.map((k, i) => `
+                    <div class="flex justify-between border-b border-gray-100 py-1 text-xs">
+                        <span>${i+1}. ${k.firstName} ${k.lastName} <small class="text-gray-400">(${k.team})</small></span>
+                        <span class="font-bold">${k.weight} lbs</span>
+                    </div>
+                `).join('') +
+                `<div class="mt-4 grid grid-cols-4 gap-1 text-[8px] font-bold text-center">
+                    <div class="border border-gray-300">RD 1</div><div class="border border-gray-300">RD 2</div>
+                    <div class="border border-gray-300">RD 3</div><div class="border border-gray-300 bg-gray-50 text-black">PLACE</div>
+                </div>`;
+            document.getElementById('bracket-output').appendChild(div);
+        }
+
+        function renderRoster() {
+            const list = document.getElementById('roster-list');
+            const search = document.getElementById('roster-search').value.toLowerCase();
+            const filtered = wrestlers.filter(w => `${w.firstName} ${w.lastName}`.toLowerCase().includes(search));
+            list.innerHTML = filtered.map(w => {
+                const weightDiff = Math.abs(w.weight - w.estWeight);
+                const flagClass = (w.weighedIn && weightDiff > 5) ? 'bg-yellow-100 border-yellow-400' : (w.weighedIn ? 'bg-green-50' : 'bg-white');
+                return `
+                <div class="flex justify-between items-center p-2 border-b ${flagClass} rounded-lg mb-1">
+                    <div>
+                        <span class="font-bold text-sm">${w.firstName} ${w.lastName}</span>
+                        <div class="text-[9px] text-gray-500 uppercase font-bold">${w.team} | Est: ${w.estWeight}</div>
+                    </div>
+                    <button onclick="markWeighedIn('${w.id}')" class="px-3 py-1 rounded text-[10px] font-bold text-white ${w.weighedIn ? 'bg-green-600' : 'bg-red-500'}">
+                        ${w.weighedIn ? w.weight + ' lbs' : 'WEIGH-IN'}
+                    </button>
+                </div>`;
+            }).join('');
+        }
+    </script>
+    <style>
+        @media print { .no-print { display: none !important; } #bracket-output { display: grid !important; grid-template-columns: 1fr 1fr; gap: 10px; } }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen">
+    <div id="login-screen" class="flex flex-col items-center pt-32 no-print">
+        <div class="bg-white p-8 rounded-2xl shadow-xl w-80 text-center border-t-4 border-blue-900">
+            <h1 class="text-3xl font-black italic text-blue-900 mb-6">PCJWL</h1>
+            <input type="password" id="pin" class="border p-3 w-full mb-4 rounded-lg text-center" placeholder="Access PIN or 'GUEST'">
+            <button onclick="login(document.getElementById('pin').value)" class="bg-blue-900 text-white w-full py-3 rounded-xl font-bold uppercase italic">Enter Portal</button>
+        </div>
+    </div>
+
+    <div id="app-content" class="hidden max-w-6xl mx-auto p-4 md:p-8">
+        <div class="flex flex-col md:flex-row justify-between items-center mb-6 no-print">
+            <h1 class="text-2xl font-black italic text-blue-900">PCJWL TOURNAMENT DASHBOARD</h1>
+            <div class="text-right">
+                <p id="progress-text" class="text-[10px] font-bold text-gray-400 uppercase mb-1">0 / 0 Weighed In</p>
+                <div class="w-48 h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div id="progress-bar" class="h-full bg-green-500 transition-all" style="width: 0%"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="input-section" class="grid grid-cols-1 lg:grid-cols-3 gap-6 no-print">
+            <div class="bg-white p-5 rounded-xl shadow-sm border">
+                <h2 class="font-bold text-xs uppercase text-gray-400 mb-4">Registration</h2>
+                <form onsubmit="addWrestler(event)" class="space-y-3">
+                    <input type="text" id="fname" placeholder="First Name" class="border p-2 w-full rounded text-sm" required>
+                    <input type="text" id="lname" placeholder="Last Name" class="border p-2 w-full rounded text-sm" required>
+                    <select id="team-select" class="border p-2 w-full rounded text-sm font-bold"></select>
+                    <div class="grid grid-cols-2 gap-2">
+                        <select id="age-group" class="border p-2 rounded text-xs"><option>8 & Under Open</option><option>9 & Over Open</option><option>Female</option></select>
+                        <select id="skill" class="border p-2 rounded text-xs"><option>Beginner</option><option>Intermediate</option><option>Advanced</option></select>
+                    </div>
+                    <input type="number" id="est-weight" placeholder="Coach's Weight" class="border p-2 w-full rounded text-sm">
+                    <button type="submit" class="bg-blue-800 text-white w-full py-3 rounded-lg font-bold italic uppercase">Register Athlete</button>
+                </form>
+            </div>
+
+            <div class="lg:col-span-2 bg-white p-5 rounded-xl shadow-sm border">
+                <div class="flex justify-between items-center mb-4 border-b pb-2">
+                    <h2 class="font-bold text-xs uppercase text-gray-400">Scale Check-in</h2>
+                    <input type="text" id="roster-search" onkeyup="renderRoster()" placeholder="Search Name..." class="border p-1 text-xs rounded w-1/3">
+                </div>
+                <div id="roster-list" class="grid grid-cols-1 md:grid-cols-2 gap-2 h-64 overflow-y-auto pr-2"></div>
+            </div>
+        </div>
+
+        <div class="admin-only hidden mt-8 bg-blue-900 p-6 rounded-2xl no-print text-white shadow-xl">
+            <div class="flex flex-wrap gap-6 items-end">
+                <div><label class="text-[10px] uppercase font-bold opacity-60">Bracket Limit</label>
+                    <select id="bracket-size" class="text-black p-2 rounded w-full"><option value="4">4 Kids</option><option value="5">5 Kids</option><option value="6">6 Kids</option></select></div>
+                <div><label class="text-[10px] uppercase font-bold opacity-60">Max Diff (lbs)</label>
+                    <input type="number" id="max-diff" value="5" class="text-black p-2 rounded w-16"></div>
+                <button onclick="generateBrackets()" class="bg-yellow-400 text-blue-900 px-6 py-2 rounded-lg font-black uppercase italic shadow-md">Build Brackets</button>
+                <button onclick="window.print()" class="bg-white/20 px-6 py-2 rounded-lg font-bold hover:bg-white/30 transition-all">Print All Sheets</button>
+            </div>
+        </div>
+
+        <div id="bracket-output" class="mt-10 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+    </div>
+</body>
+</html>
