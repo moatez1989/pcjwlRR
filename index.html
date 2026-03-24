@@ -9,7 +9,6 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getFirestore, collection, addDoc, onSnapshot, query, deleteDoc, doc, updateDoc, getDocs, setDoc, writeBatch, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
-        // Your Firebase Config (Keep this exactly as is)
         const firebaseConfig = {
             apiKey: "AIzaSyBVZBDErgAnh1Eq73rQ10UNqcUNk2FMn0",
             authDomain: "pcjwl-bd3df.firebaseapp.com",
@@ -31,6 +30,7 @@
         let wrestlers = [];
         let teamAssignments = {};
 
+        // --- AUTH & VIEW CONTROLS ---
         window.login = (pin) => {
             const p = pin.trim();
             if (ADMIN_ROLES[p]) { 
@@ -46,21 +46,19 @@
         function showApp() {
             document.getElementById('login-screen').classList.add('hidden');
             document.getElementById('app-content').classList.remove('hidden');
+            
             if (currentUserRole === 'Master Admin') {
-                document.getElementById('master-settings').classList.remove('hidden');
-                document.getElementById('reset-container').classList.remove('hidden');
+                document.getElementById('master-tools').classList.remove('hidden');
             }
             if (currentUserRole !== 'public') {
-                document.querySelectorAll('.admin-only').forEach(e => e.classList.remove('hidden'));
-            } else {
-                document.getElementById('input-section').classList.add('hidden');
-                document.getElementById('admin-bracket-controls').classList.add('hidden');
+                document.getElementById('admin-dashboard').classList.remove('hidden');
             }
+            
             document.getElementById('role-display').innerText = currentUserRole === 'public' ? "Guest Viewer" : currentUserRole;
             renderTeamAssignments();
         }
 
-        // Parent Search Tool
+        // --- PARENT SEARCH LOGIC ---
         window.findMyWrestler = (term) => {
             const val = term.toLowerCase();
             const cards = document.querySelectorAll('.bracket-card');
@@ -69,6 +67,7 @@
                 if (card.innerText.toLowerCase().includes(val)) {
                     card.classList.add('ring-4', 'ring-blue-500', 'scale-105');
                     card.style.order = "-1";
+                    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 } else {
                     card.classList.remove('ring-4', 'ring-blue-500', 'scale-105');
                     card.style.order = "0";
@@ -76,10 +75,11 @@
             });
         };
 
-        // Initialize Data Listeners
+        // --- DATABASE LISTENERS ---
         onSnapshot(collection(db, "teamConfig"), (snap) => {
             snap.forEach(d => { teamAssignments[d.id] = d.data().division; });
-            renderRoster();
+            const ts = document.getElementById('team-select');
+            if(ts) ts.innerHTML = DEFAULT_TEAMS.sort().map(t => `<option value="${t}">${t}</option>`).join('');
         });
 
         onSnapshot(collection(db, "wrestlers"), (snap) => {
@@ -88,7 +88,6 @@
             renderRoster();
         });
 
-        // Bracket Rendering
         onSnapshot(collection(db, "brackets"), (snap) => {
             const out = document.getElementById('bracket-output');
             const data = [];
@@ -97,63 +96,110 @@
                 <div class="bracket-card p-3 border-2 ${b.status === 'active' ? 'border-yellow-400 bg-yellow-50' : 'border-black bg-white'} mb-4 rounded shadow-sm transition-all duration-300">
                     <div class="flex justify-between items-center mb-2"><span class="text-[8px] font-black text-red-600 uppercase">Mat ${b.mat} | ${b.division}</span><b class="text-xs">#${b.bout}</b></div>
                     ${b.kids.map(k => `<div class="flex justify-between text-[10px] py-1 border-b border-black/5"><span>${k.firstName} ${k.lastName}</span><b>${k.weight}</b></div>`).join('')}
-                    <div class="mt-2 flex gap-1 admin-only ${currentUserRole !== 'public' ? '' : 'hidden'}">
+                    ${currentUserRole !== 'public' ? `
+                    <div class="mt-2 flex gap-1">
                         <button onclick="updateBout('${b.id}', 'active')" class="bg-yellow-400 text-[8px] px-2 py-1 rounded font-bold">START</button>
                         <button onclick="updateBout('${b.id}', 'done')" class="bg-green-600 text-white text-[8px] px-2 py-1 rounded font-bold">FINISH</button>
-                    </div>
+                    </div>` : ''}
                 </div>`).join('');
         });
 
+        // --- ADMIN ACTIONS ---
+        window.addWrestler = async (e) => {
+            e.preventDefault();
+            const team = document.getElementById('team-select').value;
+            await addDoc(collection(db, "wrestlers"), {
+                firstName: document.getElementById('fname').value,
+                lastName: document.getElementById('lname').value,
+                team: team,
+                division: teamAssignments[team] || "1A",
+                ageGroup: document.getElementById('age-select').value,
+                skill: document.getElementById('skill-select').value,
+                weight: 0, weighedIn: false
+            });
+            e.target.reset();
+        };
+
+        window.seasonReset = async () => {
+            if (!confirm("⚠️ DELETE ALL DATA?")) return;
+            const batch = writeBatch(db);
+            const wSnap = await getDocs(collection(db, 'wrestlers'));
+            const bSnap = await getDocs(collection(db, 'brackets'));
+            wSnap.forEach(d => batch.delete(d.ref));
+            bSnap.forEach(d => batch.delete(d.ref));
+            await batch.commit();
+        };
+
         window.updateBout = async (id, status) => await updateDoc(doc(db, "brackets", id), { status });
-        window.setDivisionFilter = (val) => { currentFilterDiv = val; renderRoster(); };
+        
+        function renderRoster() {
+            const list = document.getElementById('roster-list');
+            if(!list) return;
+            const filtered = wrestlers.filter(w => (currentFilterDiv === "ALL" || w.division === currentFilterDiv));
+            list.innerHTML = filtered.map(w => `<div class="text-[10px] p-1 border-b">${w.firstName} ${w.lastName} (${w.team})</div>`).join('');
+        }
+
+        function renderTeamAssignments() {
+            const list = document.getElementById('team-rotation-list');
+            if(!list) return;
+            list.innerHTML = DEFAULT_TEAMS.sort().map(team => `
+                <div class="flex justify-between items-center p-1 border-b text-[10px]">
+                    <span>${team}</span>
+                    <select onchange="updateTeamDivision('${team}', this.value)" class="border rounded px-1">
+                        ${DIVISIONS.map(d => `<option value="${d}" ${teamAssignments[team] === d ? 'selected' : ''}>${d}</option>`).join('')}
+                    </select>
+                </div>`).join('');
+        }
+
+        window.updateTeamDivision = async (t, v) => await setDoc(doc(db, "teamConfig", t), { division: v });
+
     </script>
 </head>
 <body class="bg-slate-50 font-sans">
     <div id="login-screen" class="flex flex-col items-center pt-24">
         <div class="bg-white p-8 rounded-2xl shadow-xl w-80 text-center border-t-4 border-blue-900">
-            <h1 class="text-2xl font-black text-blue-900 mb-2 italic uppercase tracking-tighter">PCJWL</h1>
-            <p class="text-[10px] text-slate-400 uppercase font-bold mb-8 tracking-widest">Tournament Access</p>
-            
-            <button onclick="login('GUEST')" 
-                    class="bg-blue-600 text-white w-full py-4 rounded-xl font-black uppercase text-sm tracking-widest shadow-lg hover:bg-blue-700 transition-all mb-8">
-                View Live Brackets
-            </button>
-
-            <div class="relative mb-8">
-                <hr class="border-slate-100">
-                <span class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white px-3 text-[9px] font-bold text-slate-300 uppercase italic">Admin Only</span>
-            </div>
-
-            <div class="space-y-3">
-                <input type="password" id="pin" 
-                       class="border border-slate-200 p-3 w-full text-center rounded-lg text-sm bg-slate-50 focus:ring-2 focus:ring-blue-900 outline-none" 
-                       placeholder="Enter PIN">
-                <button onclick="login(document.getElementById('pin').value)" 
-                        class="bg-slate-900 text-white w-full py-3 rounded-lg font-bold text-xs uppercase tracking-widest hover:bg-black transition-colors">
-                    Admin Portal
-                </button>
-            </div>
-            
-            <p class="mt-6 text-[9px] text-slate-300 uppercase font-medium">© 2026 Pierce County Junior Wrestling League</p>
+            <h1 class="text-2xl font-black text-blue-900 mb-2 italic uppercase">PCJWL</h1>
+            <button onclick="login('GUEST')" class="bg-blue-600 text-white w-full py-4 rounded-xl font-black uppercase text-sm shadow-lg mb-8 mt-4">View Live Brackets</button>
+            <div class="relative mb-8"><hr><span class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white px-2 text-[10px] font-bold text-slate-300 italic">Admin Login</span></div>
+            <input type="password" id="pin" class="border p-3 w-full text-center rounded-lg text-sm mb-2" placeholder="Enter PIN">
+            <button onclick="login(document.getElementById('pin').value)" class="bg-slate-900 text-white w-full py-3 rounded-lg font-bold text-xs uppercase tracking-widest">Login</button>
         </div>
     </div>
 
     <div id="app-content" class="hidden p-4 max-w-7xl mx-auto">
         <div class="sticky top-0 z-50 bg-slate-50 pb-4">
             <div class="bg-blue-900 p-4 rounded-2xl shadow-xl flex flex-col md:flex-row gap-4 items-center">
-                <div class="flex-1 w-full">
-                    <input type="text" onkeyup="findMyWrestler(this.value)" 
-                           placeholder="🔍 PARENTS: Type Name to find Mat number..." 
-                           class="w-full p-4 rounded-xl border-none shadow-inner text-sm font-bold placeholder:text-slate-400 focus:ring-4 focus:ring-yellow-400 transition-all">
-                </div>
-                <div class="flex items-center gap-4">
-                    <h2 id="role-display" class="text-white font-black italic uppercase text-[10px] whitespace-nowrap"></h2>
-                    <button onclick="location.reload()" class="bg-red-500 text-white px-3 py-1 rounded text-[10px] font-bold uppercase shadow-sm">Logout</button>
+                <input type="text" onkeyup="findMyWrestler(this.value)" placeholder="🔍 PARENTS: Find Wrestler Mat..." class="w-full p-4 rounded-xl text-sm font-bold">
+                <div class="flex items-center gap-4 text-white">
+                    <span id="role-display" class="font-black italic text-[10px] uppercase"></span>
+                    <button onclick="location.reload()" class="bg-red-500 px-3 py-1 rounded text-[10px]">Logout</button>
                 </div>
             </div>
         </div>
 
-        <div id="bracket-output" class="flex flex-col sm:grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4"></div>
+        <div id="admin-dashboard" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-4 mt-6 mb-8">
+            <div class="bg-white p-4 rounded-xl border">
+                <form onsubmit="addWrestler(event)" class="space-y-2">
+                    <input id="fname" placeholder="First" class="border p-2 text-sm w-full" required>
+                    <input id="lname" placeholder="Last" class="border p-2 text-sm w-full" required>
+                    <select id="team-select" class="border p-2 text-sm w-full font-bold"></select>
+                    <select id="age-select" class="border p-2 text-xs w-full"><option>8 & Under</option><option>9 & Over</option></select>
+                    <select id="skill-select" class="border p-2 text-xs w-full"><option>Beginner</option><option>Advanced</option></select>
+                    <button type="submit" class="bg-blue-900 text-white w-full py-2 rounded font-bold uppercase text-xs">Register</button>
+                </form>
+            </div>
+            <div class="lg:col-span-2 bg-white p-4 rounded-xl border h-48 overflow-y-auto" id="roster-list"></div>
+        </div>
+
+        <div id="master-tools" class="hidden bg-white p-4 rounded-xl border mb-8">
+            <div class="flex justify-between items-center mb-4 border-b pb-2">
+                <h3 class="text-xs font-black uppercase">Season Rotation</h3>
+                <button onclick="seasonReset()" class="bg-red-600 text-white text-[8px] px-2 py-1 rounded">RESET SEASON</button>
+            </div>
+            <div id="team-rotation-list" class="grid grid-cols-2 md:grid-cols-4 gap-2"></div>
+        </div>
+
+        <div id="bracket-output" class="flex flex-col sm:grid sm:grid-cols-2 lg:grid-cols-4 gap-4"></div>
     </div>
 </body>
 </html>
