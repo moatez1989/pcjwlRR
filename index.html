@@ -7,7 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, deleteDoc, doc, updateDoc, getDocs, setDoc, writeBatch } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, deleteDoc, doc, updateDoc, getDocs, setDoc, writeBatch, serverTimestamp, where } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyBVZBDErgAnh1Eq73rQ10UNqcUNk2FMn0",
@@ -20,263 +20,211 @@
 
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
-
-        const TEAMS = ["Franklin Pierce", "Mad Dogs", "Enumclaw", "Hoquiam", "Cruisers WC", "Auburn", "Olympia", "Tumwater", "Kent", "Rainier", "Orting", "Tahoma", "Sumner", "Gig Harbor", "University Place", "White River", "Puyallup", "Bethel", "JBLM", "Fife"];
         
+        const ADMIN_ROLES = {'1111': 'Admin 1A', '2222': 'Admin 1B', '3333': 'Admin 2A', '4444': 'Admin 2B', '1234': 'Master Admin'};
+        const DIVISIONS = ["1A", "1B", "2A", "2B"];
+        const DEFAULT_TEAMS = ["Franklin Pierce", "Mad Dogs", "Enumclaw", "Hoquiam", "Cruisers WC", "Auburn", "Olympia", "Tumwater", "Kent", "Rainier", "Orting", "Tahoma", "Sumner", "Gig Harbor", "University Place", "White River", "Puyallup", "Bethel", "JBLM", "Fife"];
+
         let currentUserRole = null; 
+        let currentFilterDiv = "ALL";
         let wrestlers = [];
-        let teamData = {};
-
-        // INITIALIZE TEAM PINS
-        async function initTeamPins() {
-            const snap = await getDocs(collection(db, "teams"));
-            if (snap.empty) {
-                const batch = writeBatch(db);
-                TEAMS.forEach(t => {
-                    const pin = Math.floor(1000 + Math.random() * 9000);
-                    batch.set(doc(db, "teams", t), { name: t, pin: pin.toString() });
-                });
-                await batch.commit();
-            }
-        }
-        initTeamPins();
-
-        onSnapshot(collection(db, "teams"), (snap) => {
-            snap.forEach(d => teamData[d.data().pin] = d.id);
-        });
+        let teamAssignments = {};
 
         window.login = (pin) => {
             const p = pin.trim();
-            if (p === '1234') { currentUserRole = 'admin'; showApp(); } 
-            else if (p === 'GUEST') { currentUserRole = 'public'; showApp(); } 
-            else if (teamData[p]) { currentUserRole = teamData[p]; showApp(); } 
+            if (ADMIN_ROLES[p]) { 
+                currentUserRole = ADMIN_ROLES[p]; 
+                if(currentUserRole !== 'Master Admin') currentFilterDiv = currentUserRole.split(' ')[1];
+                showApp(); 
+            } else if (p.toUpperCase() === 'GUEST') { currentUserRole = 'public'; showApp(); }
             else { alert("Invalid PIN."); }
         };
 
         function showApp() {
             document.getElementById('login-screen').classList.add('hidden');
             document.getElementById('app-content').classList.remove('hidden');
-            if (currentUserRole === 'admin') {
-                document.querySelectorAll('.admin-only').forEach(e => e.classList.remove('hidden'));
-                document.querySelectorAll('.coach-only').forEach(e => e.classList.remove('hidden'));
-            } else if (currentUserRole !== 'public') {
-                document.querySelectorAll('.coach-only').forEach(e => e.classList.remove('hidden'));
-                document.getElementById('current-team-display').innerText = `Logged in: ${currentUserRole}`;
-            } else {
-                document.getElementById('input-section').classList.add('hidden');
+            if (currentUserRole === 'Master Admin') {
+                document.getElementById('master-settings').classList.remove('hidden');
+                document.getElementById('reset-container').classList.remove('hidden');
             }
-            setupTeamDropdown();
+            if (currentUserRole.includes('Admin')) {
+                document.querySelectorAll('.admin-only').forEach(e => e.classList.remove('hidden'));
+            }
+            document.getElementById('role-display').innerText = currentUserRole;
+            renderTeamAssignments();
         }
 
-        function setupTeamDropdown() {
-            const select = document.getElementById('team-select');
-            if(!select) return;
-            select.innerHTML = '';
-            const list = (currentUserRole === 'admin' || currentUserRole === 'public') ? TEAMS : [currentUserRole];
-            list.sort().forEach(t => { 
-                const o = document.createElement('option'); 
-                o.value = t; o.textContent = t; 
-                select.appendChild(o); 
-            });
+        // --- MASTER SEASON RESET ---
+        window.seasonReset = async () => {
+            if (!confirm("⚠️ DANGER: This will delete ALL wrestlers and ALL brackets for the entire league. This cannot be undone. Are you sure?")) return;
+            
+            const collectionsToClear = ['wrestlers', 'brackets'];
+            for (const colName of collectionsToClear) {
+                const snap = await getDocs(collection(db, colName));
+                const batch = writeBatch(db);
+                snap.forEach(d => batch.delete(d.ref));
+                await batch.commit();
+            }
+            alert("Season Reset Complete. All rosters and brackets cleared.");
+        };
+
+        // --- TEAM CONFIG ---
+        onSnapshot(collection(db, "teamConfig"), (snap) => {
+            snap.forEach(d => { teamAssignments[d.id] = d.data().division; });
+            setupTeamDropdowns();
+            renderRoster();
+        });
+
+        window.updateTeamDivision = async (teamName, newDiv) => {
+            await setDoc(doc(db, "teamConfig", teamName), { division: newDiv });
+        };
+
+        function renderTeamAssignments() {
+            const list = document.getElementById('team-rotation-list');
+            if(!list) return;
+            list.innerHTML = DEFAULT_TEAMS.sort().map(team => `
+                <div class="flex justify-between items-center p-2 border-b text-xs">
+                    <span class="font-bold">${team}</span>
+                    <select onchange="updateTeamDivision('${team}', this.value)" class="border rounded p-1">
+                        ${DIVISIONS.map(d => `<option value="${d}" ${teamAssignments[team] === d ? 'selected' : ''}>${d}</option>`).join('')}
+                    </select>
+                </div>`).join('');
         }
 
+        // --- WRESTLER & BRACKET CORE (Previous Logic) ---
         onSnapshot(collection(db, "wrestlers"), (snap) => {
             wrestlers = [];
             snap.forEach(d => wrestlers.push({ id: d.id, ...d.data() }));
             renderRoster();
-            updateProgressBar();
         });
-
-        window.renderRoster = () => {
-            const list = document.getElementById('roster-list');
-            if(!list) return;
-            const search = document.getElementById('roster-search').value.toLowerCase();
-            const filtered = wrestlers.filter(w => {
-                const matchName = `${w.firstName} ${w.lastName}`.toLowerCase().includes(search);
-                const matchTeam = (currentUserRole === 'admin' || currentUserRole === 'public' || w.team === currentUserRole);
-                return matchName && matchTeam;
-            });
-
-            list.innerHTML = filtered.map(w => `
-                <div class="flex justify-between items-center p-3 border-b ${w.weighedIn ? 'bg-green-50' : 'bg-white'} rounded-lg mb-1 shadow-sm">
-                    <div class="flex-1">
-                        <div class="flex items-center gap-2">
-                            <span class="font-bold text-sm text-slate-800">${w.firstName} ${w.lastName}</span>
-                            <span class="text-[8px] bg-slate-100 px-1 rounded font-black text-slate-500 uppercase">${w.skill || 'Beginner'}</span>
-                        </div>
-                        <div class="text-[9px] text-blue-900 font-bold uppercase mt-0.5">
-                            ${w.team} <span class="text-gray-400 mx-1">|</span> ${w.ageGroup || 'Open'}
-                        </div>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <button onclick="markWeighedIn('${w.id}')" class="px-3 py-2 rounded text-[10px] font-black text-white shadow-sm ${w.weighedIn ? 'bg-green-600' : 'bg-red-500'}">
-                            ${w.weighedIn ? w.weight + ' LBS' : 'WEIGH'}
-                        </button>
-                        ${currentUserRole === 'admin' ? `<button onclick="deleteWrestler('${w.id}')" class="text-gray-300 hover:text-red-500 text-xs px-1">✕</button>` : ''}
-                    </div>
-                </div>`).join('');
-        };
-
-        window.markWeighedIn = async (id) => {
-            if(currentUserRole === 'public') return;
-            const w = prompt("Enter Scale Weight:");
-            if (w) await updateDoc(doc(db, "wrestlers", id), { weight: parseFloat(w), weighedIn: true });
-        };
-
-        window.deleteWrestler = async (id) => {
-            if(confirm("Delete this entry?")) await deleteDoc(doc(db, "wrestlers", id));
-        };
-
-        window.changePin = async () => {
-            const newPin = prompt("Enter your new 4-digit PIN:");
-            if (newPin && newPin.length >= 4) {
-                await updateDoc(doc(db, "teams", currentUserRole), { pin: newPin });
-                alert("PIN Updated!");
-            }
-        };
-
-        window.importCSV = async () => {
-            const input = document.getElementById('csv-input').value;
-            const rows = input.split('\n');
-            const batch = writeBatch(db);
-            rows.forEach(row => {
-                const cols = row.split(',');
-                if(cols.length >= 2) {
-                    const ref = doc(collection(db, "wrestlers"));
-                    batch.set(ref, {
-                        firstName: cols[0].trim(), lastName: cols[1].trim(),
-                        team: currentUserRole, ageGroup: cols[2]?.trim() || "8 & Under Open",
-                        skill: cols[3]?.trim() || "Beginner", estWeight: parseFloat(cols[4]) || 0,
-                        weight: 0, weighedIn: false
-                    });
-                }
-            });
-            await batch.commit();
-            document.getElementById('csv-modal').classList.add('hidden');
-        };
 
         window.addWrestler = async (e) => {
             e.preventDefault();
-            const data = {
+            const team = document.getElementById('team-select').value;
+            await addDoc(collection(db, "wrestlers"), {
                 firstName: document.getElementById('fname').value,
                 lastName: document.getElementById('lname').value,
-                team: document.getElementById('team-select').value,
-                ageGroup: document.getElementById('age-group').value,
-                skill: document.getElementById('skill').value,
-                estWeight: parseFloat(document.getElementById('est-weight').value) || 0,
+                team: team,
+                division: teamAssignments[team] || "1A",
+                ageGroup: document.getElementById('age-select').value,
+                skill: document.getElementById('skill-select').value,
                 weight: 0, weighedIn: false
-            };
-            await addDoc(collection(db, "wrestlers"), data);
+            });
             e.target.reset();
         };
 
-        function updateProgressBar() {
-            const total = wrestlers.length;
-            const weighed = wrestlers.filter(w => w.weighedIn).length;
-            const pct = total === 0 ? 0 : Math.round((weighed / total) * 100);
-            const bar = document.getElementById('progress-bar');
-            const text = document.getElementById('progress-text');
-            if(bar) bar.style.width = pct + '%';
-            if(text) text.innerText = `${weighed} / ${total} Athletes Weighed In`;
-        }
-
-        window.generateBrackets = () => {
-            const ready = wrestlers.filter(w => w.weighedIn);
-            const size = parseInt(document.getElementById('bracket-size').value);
-            const diff = parseFloat(document.getElementById('max-diff').value);
-            const out = document.getElementById('bracket-output');
-            out.innerHTML = '';
-            let boutCounter = 100;
-            const groups = {};
-            ready.forEach(w => {
-                const key = `${w.ageGroup} - ${w.skill}`;
-                if (!groups[key]) groups[key] = [];
-                groups[key].push(w);
-            });
-            for (let key in groups) {
-                const sorted = groups[key].sort((a,b) => a.weight - b.weight);
-                let current = [];
-                sorted.forEach(w => {
-                    if (current.length === 0 || (w.weight - current[0].weight <= diff && current.length < size)) {
-                        current.push(w);
-                    } else {
-                        renderCard(current, key, boutCounter++);
-                        current = [w];
-                    }
-                });
-                if (current.length) renderCard(current, key, boutCounter++);
-            }
+        window.renderRoster = () => {
+            const list = document.getElementById('roster-list');
+            const search = document.getElementById('roster-search').value.toLowerCase();
+            const filtered = wrestlers.filter(w => (currentFilterDiv === "ALL" || w.division === currentFilterDiv) && `${w.firstName} ${w.lastName}`.toLowerCase().includes(search));
+            list.innerHTML = filtered.map(w => `
+                <div class="flex justify-between items-center p-2 border-b text-xs">
+                    <div><b>${w.firstName} ${w.lastName}</b><br><span class="opacity-50">${w.team}</span></div>
+                    <button onclick="markWeight('${w.id}')" class="px-2 py-1 rounded text-white font-bold ${w.weighedIn ? 'bg-green-600' : 'bg-red-500'}">
+                        ${w.weighedIn ? w.weight : 'WEIGH'}
+                    </button>
+                </div>`).join('');
         };
 
-        function renderCard(kids, group, boutNum) {
-            const div = document.createElement('div');
-            div.className = "p-4 border-2 border-black bg-white mb-4 shadow-md break-inside-avoid";
-            div.innerHTML = `<div class="flex justify-between items-center border-b-2 border-black pb-1 mb-2"><h3 class="font-black italic text-blue-900 text-sm uppercase">${group}</h3><span class="bg-black text-white px-2 py-0.5 text-xs font-bold">#${boutNum}</span></div>` +
-                kids.map((k, i) => `<div class="flex justify-between border-b border-gray-100 py-1 text-xs"><span>${k.firstName} ${k.lastName} (${k.team})</span><span class="font-bold">${k.weight}</span></div>`).join('') +
-                `<div class="mt-4 grid grid-cols-4 gap-1 text-[8px] font-bold text-center"><div class="border">RD 1</div><div class="border">RD 2</div><div class="border">RD 3</div><div class="border bg-gray-100 text-black">PLACE</div></div>`;
-            document.getElementById('bracket-output').appendChild(div);
-        }
+        window.markWeight = async (id) => {
+            const w = prompt("Weight:");
+            if(w) await updateDoc(doc(db, "wrestlers", id), { weight: parseFloat(w), weighedIn: true, weighInTime: serverTimestamp() });
+        };
+
+        window.generateBrackets = async () => {
+            const targetDiv = currentFilterDiv === "ALL" ? "1A" : currentFilterDiv;
+            const ready = wrestlers.filter(w => w.weighedIn && w.division === targetDiv).sort((a,b) => a.weight - b.weight);
+            const size = parseInt(document.getElementById('bracket-size').value);
+            const diff = parseFloat(document.getElementById('max-diff').value);
+            const batch = writeBatch(db);
+            let current = [], bout = 100;
+
+            ready.forEach((w) => {
+                if (current.length === 0 || (w.weight - current[0].weight <= diff && current.length < size)) {
+                    current.push(w);
+                } else {
+                    batch.set(doc(collection(db, "brackets")), { kids: current, division: targetDiv, bout: bout++, status: 'waiting', mat: (bout % 4) + 1 });
+                    current = [w];
+                }
+            });
+            if(current.length) batch.set(doc(collection(db, "brackets")), { kids: current, division: targetDiv, bout: bout++, status: 'waiting', mat: (bout % 4) + 1 });
+            await batch.commit();
+        };
+
+        onSnapshot(collection(db, "brackets"), (snap) => {
+            const out = document.getElementById('bracket-output'), data = [];
+            snap.forEach(d => data.push({id: d.id, ...d.data()}));
+            out.innerHTML = data.filter(b => currentFilterDiv === "ALL" || b.division === currentFilterDiv).map(b => `
+                <div class="p-3 border-2 ${b.status === 'active' ? 'border-yellow-400 bg-yellow-50' : 'border-black bg-white'} mb-4 rounded shadow-sm">
+                    <div class="flex justify-between items-center mb-2"><span class="text-[8px] font-black text-red-600 uppercase">Mat ${b.mat}</span><b class="text-xs">#${b.bout}</b></div>
+                    ${b.kids.map(k => `<div class="flex justify-between text-[10px] py-0.5 border-b border-black/5"><span>${k.firstName} ${k.lastName}</span><b>${k.weight}</b></div>`).join('')}
+                    <div class="mt-2 flex gap-1 admin-only ${currentUserRole.includes('Admin') ? '' : 'hidden'}">
+                        <button onclick="updateBout('${b.id}', 'active')" class="bg-yellow-400 text-[8px] px-2 py-1 rounded">START</button>
+                        <button onclick="updateBout('${b.id}', 'done')" class="bg-green-600 text-white text-[8px] px-2 py-1 rounded">FINISH</button>
+                    </div>
+                </div>`).join('');
+        });
+
+        window.updateBout = async (id, status) => await updateDoc(doc(db, "brackets", id), { status });
+        window.setDivisionFilter = (val) => { currentFilterDiv = val; renderRoster(); };
+        function setupTeamDropdowns() { document.getElementById('team-select').innerHTML = DEFAULT_TEAMS.sort().map(t => `<option value="${t}">${t}</option>`).join(''); }
+
     </script>
 </head>
-<body class="bg-slate-50 min-h-screen">
-    <div id="login-screen" class="flex flex-col items-center pt-32 no-print">
-        <div class="bg-white p-8 rounded-2xl shadow-xl w-80 text-center border-t-4 border-blue-900">
-            <h1 class="text-3xl font-black italic text-blue-900 mb-6 uppercase">PCJWL</h1>
-            <input type="password" id="pin" class="border p-3 w-full mb-4 rounded-lg text-center" placeholder="PIN (Admin: 1234)">
-            <button onclick="login(document.getElementById('pin').value)" class="bg-blue-900 text-white w-full py-3 rounded-xl font-bold uppercase italic">Enter Portal</button>
+<body class="bg-slate-50">
+    <div id="login-screen" class="flex flex-col items-center pt-24">
+        <div class="bg-white p-8 rounded-2xl shadow-xl w-72 text-center border-t-4 border-blue-900">
+            <h1 class="text-2xl font-black text-blue-900 mb-6 italic uppercase">PCJWL</h1>
+            <input type="password" id="pin" class="border p-2 w-full mb-4 text-center rounded" placeholder="PIN">
+            <button onclick="login(document.getElementById('pin').value)" class="bg-blue-900 text-white w-full py-2 rounded font-bold uppercase">Login</button>
         </div>
     </div>
-    <div id="app-content" class="hidden max-w-6xl mx-auto p-4 md:p-8">
-        <div class="flex justify-between items-center mb-6 no-print">
+
+    <div id="app-content" class="hidden p-4 max-w-7xl mx-auto">
+        <div class="flex justify-between items-center mb-6 bg-white p-4 rounded-xl shadow-sm">
             <div>
-                <h1 class="text-2xl font-black italic text-blue-900">PCJWL TOURNAMENT</h1>
-                <p id="current-team-display" class="text-xs font-bold text-gray-500 uppercase"></p>
+                <h2 id="role-display" class="font-black text-blue-900 uppercase italic"></h2>
+                <select id="div-filter" onchange="setDivisionFilter(this.value)" class="text-xs border rounded font-bold mt-2">
+                    <option value="ALL">All Divisions</option>
+                    <option value="1A">1A</option><option value="1B">1B</option>
+                    <option value="2A">2A</option><option value="2B">2B</option>
+                </select>
             </div>
-            <div class="flex gap-2">
-                <button onclick="document.getElementById('csv-modal').classList.remove('hidden')" class="coach-only hidden bg-white border px-3 py-1 rounded text-xs font-bold shadow-sm">IMPORT ROSTER</button>
-                <button onclick="changePin()" class="coach-only hidden bg-gray-100 px-3 py-1 rounded text-xs font-bold">CHANGE PIN</button>
-                <button onclick="location.reload()" class="bg-red-50 text-red-600 px-3 py-1 rounded text-xs font-bold">LOGOUT</button>
+            <div id="reset-container" class="hidden">
+                <button onclick="seasonReset()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-black uppercase tracking-widest shadow-lg">Reset Season</button>
             </div>
         </div>
-        <div class="mb-8 no-print">
-            <div class="flex justify-between items-end mb-1 text-[10px] font-bold text-gray-400 uppercase"><p id="progress-text">0 / 0 Weighed In</p></div>
-            <div class="w-full h-2 bg-gray-200 rounded-full overflow-hidden"><div id="progress-bar" class="h-full bg-green-500 transition-all" style="width: 0%"></div></div>
+
+        <div id="master-settings" class="hidden bg-white p-6 rounded-xl border border-blue-200 shadow-sm mb-8">
+            <h3 class="text-xs font-black text-blue-900 uppercase mb-4 tracking-widest border-b pb-2">Season Team Rotation</h3>
+            <div id="team-rotation-list" class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4"></div>
         </div>
-        <div id="input-section" class="grid grid-cols-1 lg:grid-cols-3 gap-6 no-print">
-            <div class="bg-white p-5 rounded-xl shadow-sm border">
-                <h2 class="font-bold text-xs uppercase text-gray-400 mb-4">Registration</h2>
-                <form onsubmit="addWrestler(event)" class="space-y-3">
-                    <input type="text" id="fname" placeholder="First Name" class="border p-2 w-full rounded text-sm" required>
-                    <input type="text" id="lname" placeholder="Last Name" class="border p-2 w-full rounded text-sm" required>
-                    <select id="team-select" class="border p-2 w-full rounded text-sm font-bold"></select>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+            <div class="bg-white p-4 rounded-xl shadow-sm border">
+                <form onsubmit="addWrestler(event)" class="space-y-2">
+                    <div class="flex gap-2"><input id="fname" placeholder="First" class="border p-2 text-sm w-full rounded" required><input id="lname" placeholder="Last" class="border p-2 text-sm w-full rounded" required></div>
+                    <select id="team-select" class="border p-2 text-sm w-full font-bold"></select>
                     <div class="grid grid-cols-2 gap-2">
-                        <select id="age-group" class="border p-2 rounded text-xs"><option>8 & Under Open</option><option>9 & Over Open</option><option>Female</option></select>
-                        <select id="skill" class="border p-2 rounded text-xs"><option>Beginner</option><option>Intermediate</option><option>Advanced</option></select>
+                        <select id="age-select" class="border p-1 text-xs"><option>8 & Under Open</option><option>9 & Over Open</option><option>Female</option></select>
+                        <select id="skill-select" class="border p-1 text-xs"><option>Beginner</option><option>Intermediate</option><option>Advanced</option></select>
                     </div>
-                    <input type="number" id="est-weight" placeholder="Coach Weight" class="border p-2 w-full rounded text-sm">
-                    <button type="submit" class="bg-blue-800 text-white w-full py-3 rounded-lg font-bold italic uppercase">Register Athlete</button>
+                    <button type="submit" class="bg-blue-900 text-white w-full py-2 rounded font-bold text-xs uppercase">Add Wrestler</button>
                 </form>
             </div>
-            <div class="lg:col-span-2 bg-white p-5 rounded-xl shadow-sm border">
-                <div class="flex justify-between items-center mb-4 border-b pb-2"><h2 class="font-bold text-xs uppercase text-gray-400">Scale Check-in</h2><input type="text" id="roster-search" onkeyup="renderRoster()" placeholder="Search Name..." class="border p-1 text-xs rounded w-1/3"></div>
-                <div id="roster-list" class="grid grid-cols-1 md:grid-cols-2 gap-2 h-96 overflow-y-auto pr-2"></div>
+            <div class="lg:col-span-2 bg-white p-4 rounded-xl shadow-sm border overflow-hidden">
+                <input id="roster-search" onkeyup="renderRoster()" placeholder="Search Name..." class="border p-1 text-[10px] rounded w-full mb-2">
+                <div id="roster-list" class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 h-40 overflow-y-auto"></div>
             </div>
         </div>
-        <div class="admin-only hidden mt-8 bg-blue-900 p-6 rounded-2xl no-print text-white shadow-xl flex flex-wrap gap-6 items-end">
-            <div><label class="text-[10px] uppercase font-bold opacity-60">Bracket Limit</label><select id="bracket-size" class="text-black p-2 rounded w-full"><option value="4">4 Kids</option><option value="5">5 Kids</option><option value="6">6 Kids</option></select></div>
-            <div><label class="text-[10px] uppercase font-bold opacity-60">Max Diff (lbs)</label><input type="number" id="max-diff" value="5" class="text-black p-2 rounded w-16"></div>
-            <button onclick="generateBrackets()" class="bg-yellow-400 text-blue-900 px-6 py-2 rounded-lg font-black uppercase italic shadow-md">Build Brackets</button>
-            <button onclick="window.print()" class="bg-white/20 px-6 py-2 rounded-lg font-bold hover:bg-white/30 transition-all">Print Sheets</button>
+
+        <div class="admin-only hidden bg-blue-900 p-4 rounded-xl mb-8 flex gap-4 items-center justify-center">
+            <select id="bracket-size" class="p-1 rounded text-xs"><option value="4">4-Man</option><option value="5">5-Man</option></select>
+            <input id="max-diff" value="5" type="number" class="p-1 rounded text-xs w-12">
+            <button onclick="generateBrackets()" class="bg-yellow-400 text-blue-900 px-4 py-1 rounded font-black text-xs uppercase italic">Build Brackets</button>
         </div>
-        <div id="bracket-output" class="mt-10 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
-    </div>
-    <div id="csv-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center p-4 no-print">
-        <div class="bg-white p-6 rounded-lg w-full max-w-lg shadow-2xl">
-            <h2 class="font-bold mb-2 uppercase text-sm">Import Roster</h2>
-            <p class="text-[10px] text-gray-400 mb-4 font-mono">Columns: First, Last, Age, Skill, EstWeight</p>
-            <textarea id="csv-input" class="w-full h-48 border p-2 text-xs font-mono" placeholder="Ex: John,Smith,8 & Under Open,Beginner,65"></textarea>
-            <div class="flex justify-end gap-2 mt-4"><button onclick="document.getElementById('csv-modal').classList.add('hidden')" class="bg-gray-100 px-4 py-2 rounded text-xs font-bold uppercase">Cancel</button><button onclick="importCSV()" class="bg-blue-800 text-white px-4 py-2 rounded text-xs font-bold uppercase">Import</button></div>
-        </div>
+
+        <div id="bracket-output" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"></div>
     </div>
 </body>
 </html>
