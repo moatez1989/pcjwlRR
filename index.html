@@ -1,41 +1,74 @@
-<script type="module">
-    // ... [Previous initialization code remains the same] ...
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PCJWL Tournament Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, deleteDoc, doc, updateDoc, getDocs, setDoc, writeBatch } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
-    function renderRoster() {
-        const list = document.getElementById('roster-list');
-        const search = document.getElementById('roster-search').value.toLowerCase();
-        const filtered = wrestlers.filter(w => {
-            const matchName = `${w.firstName} ${w.lastName}`.toLowerCase().includes(search);
-            const matchTeam = currentUserRole === 'admin' || currentUserRole === 'public' || w.team === currentUserRole;
-            return matchName && matchTeam;
+        const firebaseConfig = {
+            apiKey: "AIzaSyBVZBDErgAnh1Eq73rQ10UNqcUNk2FMn0",
+            authDomain: "pcjwl-bd3df.firebaseapp.com",
+            projectId: "pcjwl-bd3df",
+            storageBucket: "pcjwl-bd3df.firebasestorage.app",
+            messagingSenderId: "647936171921",
+            appId: "1:647936171921:web:6158bd4bad5c25973c0430"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        const TEAMS = ["Franklin Pierce", "Mad Dogs", "Enumclaw", "Hoquiam", "Cruisers WC", "Auburn", "Olympia", "Tumwater", "Kent", "Rainier", "Orting", "Tahoma", "Sumner", "Gig Harbor", "University Place", "White River", "Puyallup", "Bethel", "JBLM", "Fife"];
+        
+        let currentUserRole = null; 
+        let wrestlers = [];
+        let teamData = {};
+
+        async function initTeamPins() {
+            const snap = await getDocs(collection(db, "teams"));
+            if (snap.empty) {
+                const batch = writeBatch(db);
+                TEAMS.forEach(t => {
+                    const pin = Math.floor(1000 + Math.random() * 9000);
+                    batch.set(doc(db, "teams", t), { name: t, pin: pin.toString() });
+                });
+                await batch.commit();
+            }
+        }
+        initTeamPins();
+
+        onSnapshot(collection(db, "teams"), (snap) => {
+            snap.forEach(d => teamData[d.data().pin] = d.id);
         });
 
-        list.innerHTML = filtered.map(w => `
-            <div class="flex justify-between items-center p-3 border-b ${w.weighedIn ? 'bg-green-50' : 'bg-white'} rounded-lg mb-1 shadow-sm">
-                <div class="flex-1">
-                    <div class="flex items-center gap-2">
-                        <span class="font-bold text-sm text-slate-800">${w.firstName} ${w.lastName}</span>
-                        <span class="text-[8px] bg-slate-100 px-1 rounded font-black text-slate-500 uppercase">${w.skill}</span>
-                    </div>
-                    <div class="text-[9px] text-blue-900 font-bold uppercase mt-0.5">
-                        ${w.team} <span class="text-gray-400 mx-1">|</span> ${w.ageGroup}
-                    </div>
-                </div>
-                <div class="flex items-center gap-2">
-                    <button onclick="markWeighedIn('${w.id}')" class="px-4 py-2 rounded text-[10px] font-black text-white shadow-sm transition-all ${w.weighedIn ? 'bg-green-600' : 'bg-red-500 hover:bg-red-600'}">
-                        ${w.weighedIn ? w.weight + ' LBS' : 'WEIGH'}
-                    </button>
-                    ${currentUserRole === 'admin' ? `<button onclick="deleteWrestler('${w.id}')" class="text-gray-300 hover:text-red-500 text-xs px-1">✕</button>` : ''}
-                </div>
-            </div>`).join('');
-    }
+        window.login = (pin) => {
+            const p = pin.trim();
+            if (p === '1234') { currentUserRole = 'admin'; showApp(); } 
+            else if (p === 'GUEST') { currentUserRole = 'public'; showApp(); } 
+            else if (teamData[p]) { currentUserRole = teamData[p]; showApp(); } 
+            else { alert("Invalid PIN."); }
+        };
 
-    // Add this helper for Admin cleanup
-    window.deleteWrestler = async (id) => {
-        if(confirm("Delete this wrestler?")) {
-            await deleteDoc(doc(db, "wrestlers", id));
+        function showApp() {
+            document.getElementById('login-screen').classList.add('hidden');
+            document.getElementById('app-content').classList.remove('hidden');
+            if (currentUserRole === 'admin') {
+                document.querySelectorAll('.admin-only').forEach(e => e.classList.remove('hidden'));
+                document.querySelectorAll('.coach-only').forEach(e => e.classList.remove('hidden'));
+            } else if (currentUserRole !== 'public') {
+                document.querySelectorAll('.coach-only').forEach(e => e.classList.remove('hidden'));
+                document.getElementById('current-team-display').innerText = `Logged in: ${currentUserRole}`;
+            } else {
+                document.getElementById('input-section').classList.add('hidden');
+            }
+            setupTeamDropdown();
         }
-    };
 
-    // ... [Rest of the helper functions remain the same] ...
-</script>
+        function setupTeamDropdown() {
+            const select = document.getElementById('team-select');
+            select.innerHTML = '';
+            const list = (currentUserRole === 'admin' || currentUserRole === 'public') ? TEAMS : [currentUserRole];
+            list.sort().forEach(t => {
